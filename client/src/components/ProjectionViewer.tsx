@@ -2,6 +2,7 @@
  * ProjectionViewer
  * Renders a 2D projection of a point cloud onto a plane.
  * Uses a separate Three.js canvas with orthographic camera.
+ * Coordinate system: Z-up (X=East, Y=North, Z=Up)
  */
 
 import { useRef, useEffect } from 'react';
@@ -21,11 +22,8 @@ interface ProjectionViewerProps {
 export default function ProjectionViewer({ id, cloud, plane, sliceLabel, onClose }: ProjectionViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const sceneRef = useRef<THREE.Scene | null>(null);
-  const cameraRef = useRef<THREE.OrthographicCamera | null>(null);
   const frameRef = useRef<number>(0);
 
-  // Pan/zoom state
   const isDraggingRef = useRef(false);
   const lastMouseRef = useRef({ x: 0, y: 0 });
   const panRef = useRef({ x: 0, y: 0 });
@@ -35,67 +33,72 @@ export default function ProjectionViewer({ id, cloud, plane, sliceLabel, onClose
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const w = canvas.clientWidth || 320;
-    const h = canvas.clientHeight || 240;
+    const w = canvas.clientWidth || 300;
+    const h = canvas.clientHeight || 200;
+    const b = cloud.bounds;
+    const maxSize = Math.max(b.size.x, b.size.y, b.size.z, 0.001) * 0.6;
+    const aspect = w / h;
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
     renderer.setClearColor(0x080c14);
     rendererRef.current = renderer;
 
     const scene = new THREE.Scene();
-    sceneRef.current = scene;
 
-    // Orthographic camera
-    const aspect = w / h;
-    const b = cloud.bounds;
-    const maxSize = Math.max(b.size.x, b.size.y, b.size.z) * 0.6;
+    // Orthographic camera positioned along the normal to the chosen plane
     const camera = new THREE.OrthographicCamera(
       -maxSize * aspect, maxSize * aspect,
       maxSize, -maxSize,
-      -10000, 10000
+      -100000, 100000
     );
 
-    // Set camera position based on plane
+    // Z-up: place camera looking along the axis perpendicular to the plane
     if (plane === 'xy') {
-      camera.position.set(b.center.x, b.center.y, 1000);
+      // Top-down view: camera above looking down (-Z direction)
+      camera.position.set(b.center.x, b.center.y, 100000);
+      camera.up.set(0, 1, 0); // Y is "up" in screen
       camera.lookAt(b.center.x, b.center.y, 0);
     } else if (plane === 'xz') {
-      camera.position.set(b.center.x, 1000, b.center.z);
+      // Front view: camera in front looking in -Y direction
+      camera.position.set(b.center.x, -100000, b.center.z);
+      camera.up.set(0, 0, 1); // Z is "up" in screen
       camera.lookAt(b.center.x, 0, b.center.z);
     } else {
-      camera.position.set(1000, b.center.y, b.center.z);
+      // Side view (YZ): camera to the right looking in -X direction
+      camera.position.set(100000, b.center.y, b.center.z);
+      camera.up.set(0, 0, 1); // Z is "up" in screen
       camera.lookAt(0, b.center.y, b.center.z);
     }
     camera.updateProjectionMatrix();
-    cameraRef.current = camera;
 
-    // Add grid
+    // Grid
     const gridSize = maxSize * 3;
     const grid = new THREE.GridHelper(gridSize, 20, 0x1a2744, 0x0f1a30);
     if (plane === 'xy') {
       grid.rotation.x = Math.PI / 2;
       grid.position.set(b.center.x, b.center.y, 0);
     } else if (plane === 'xz') {
+      // Grid in XZ plane: default GridHelper is in XZ, no rotation needed
       grid.position.set(b.center.x, 0, b.center.z);
     } else {
+      // YZ plane
       grid.rotation.z = Math.PI / 2;
       grid.position.set(0, b.center.y, b.center.z);
     }
     scene.add(grid);
 
-    // Add point cloud
+    // Point cloud
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(cloud.points, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(cloud.colors, 3));
+    geometry.setAttribute('position', new THREE.BufferAttribute(cloud.points.slice(), 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(cloud.colors.slice(), 3));
     const material = new THREE.PointsMaterial({
       size: 2,
       sizeAttenuation: false,
       vertexColors: true,
     });
-    const points = new THREE.Points(geometry, material);
-    scene.add(points);
+    scene.add(new THREE.Points(geometry, material));
 
     // Axes
     const axes = new THREE.AxesHelper(maxSize * 0.3);
@@ -110,31 +113,28 @@ export default function ProjectionViewer({ id, cloud, plane, sliceLabel, onClose
     };
     animate();
 
+    const updateCamera = () => {
+      const nw = canvas.clientWidth;
+      const nh = canvas.clientHeight;
+      if (nw === 0 || nh === 0) return;
+      const na = nw / nh;
+      const hw = maxSize * na / zoomRef.current;
+      const hh = maxSize / zoomRef.current;
+      camera.left   = -hw + panRef.current.x;
+      camera.right  =  hw + panRef.current.x;
+      camera.top    =  hh + panRef.current.y;
+      camera.bottom = -hh + panRef.current.y;
+      camera.updateProjectionMatrix();
+    };
+
     const resizeObserver = new ResizeObserver(() => {
       const nw = canvas.clientWidth;
       const nh = canvas.clientHeight;
       if (nw === 0 || nh === 0) return;
       renderer.setSize(nw, nh);
-      const na = nw / nh;
-      camera.left = -maxSize * na / zoomRef.current + panRef.current.x;
-      camera.right = maxSize * na / zoomRef.current + panRef.current.x;
-      camera.top = maxSize / zoomRef.current + panRef.current.y;
-      camera.bottom = -maxSize / zoomRef.current + panRef.current.y;
-      camera.updateProjectionMatrix();
+      updateCamera();
     });
     resizeObserver.observe(canvas);
-
-    // Pan/zoom handlers
-    const updateCamera = () => {
-      const nw = canvas.clientWidth;
-      const nh = canvas.clientHeight;
-      const na = nw / nh;
-      camera.left = -maxSize * na / zoomRef.current + panRef.current.x;
-      camera.right = maxSize * na / zoomRef.current + panRef.current.x;
-      camera.top = maxSize / zoomRef.current + panRef.current.y;
-      camera.bottom = -maxSize / zoomRef.current + panRef.current.y;
-      camera.updateProjectionMatrix();
-    };
 
     const onMouseDown = (e: MouseEvent) => {
       isDraggingRef.current = true;
@@ -145,7 +145,7 @@ export default function ProjectionViewer({ id, cloud, plane, sliceLabel, onClose
       const dx = e.clientX - lastMouseRef.current.x;
       const dy = e.clientY - lastMouseRef.current.y;
       lastMouseRef.current = { x: e.clientX, y: e.clientY };
-      const scale = (maxSize * 2) / canvas.clientHeight / zoomRef.current;
+      const scale = (maxSize * 2) / (canvas.clientHeight || 1) / zoomRef.current;
       panRef.current.x -= dx * scale;
       panRef.current.y += dy * scale;
       updateCamera();
@@ -162,7 +162,7 @@ export default function ProjectionViewer({ id, cloud, plane, sliceLabel, onClose
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
     canvas.addEventListener('wheel', onWheel, { passive: false });
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
 
     return () => {
       cancelAnimationFrame(frameRef.current);
@@ -175,27 +175,28 @@ export default function ProjectionViewer({ id, cloud, plane, sliceLabel, onClose
     };
   }, [cloud, plane]);
 
-  const planeLabel = { xy: 'XY 平面 (俯视)', xz: 'XZ 平面 (正视)', yz: 'YZ 平面 (侧视)' }[plane];
+  const planeLabel = {
+    xy: 'XY 平面 (俯视 · Z轴向上)',
+    xz: 'XZ 平面 (正视 · Z轴向上)',
+    yz: 'YZ 平面 (侧视 · Z轴向上)',
+  }[plane];
 
   return (
-    <div className="flex flex-col rounded-lg overflow-hidden border border-slate-700/50 bg-slate-900/60 backdrop-blur-sm" style={{ minWidth: 280, minHeight: 220 }}>
-      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-700/50 bg-slate-800/60">
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-blue-400"></span>
-          <span className="text-xs font-mono text-slate-300">{sliceLabel}</span>
-          <span className="text-xs font-mono text-slate-500">→ {planeLabel}</span>
+    <div className="flex flex-col rounded-lg overflow-hidden h-full" style={{ border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(8,12,20,0.9)' }}>
+      <div className="flex items-center justify-between px-3 py-1.5 flex-shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.03)' }}>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0"></span>
+          <span className="text-xs font-mono text-slate-300 truncate">{sliceLabel}</span>
+          <span className="text-xs font-mono text-slate-600 truncate hidden sm:block">→ {planeLabel}</span>
         </div>
-        <button
-          onClick={onClose}
-          className="text-slate-500 hover:text-red-400 transition-colors"
-        >
-          <X size={14} />
+        <button onClick={onClose} className="text-slate-600 hover:text-red-400 transition-colors flex-shrink-0 ml-2">
+          <X size={13} />
         </button>
       </div>
       <canvas
         ref={canvasRef}
-        className="w-full flex-1"
-        style={{ minHeight: 180, cursor: 'grab' }}
+        className="w-full flex-1 block"
+        style={{ cursor: 'grab', minHeight: 0 }}
       />
     </div>
   );

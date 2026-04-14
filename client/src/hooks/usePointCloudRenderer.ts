@@ -2,7 +2,14 @@
  * usePointCloudRenderer
  * Three.js-based point cloud renderer hook.
  * Design: Dark Universe theme - deep space background, rainbow height coloring.
- * Features: orbit controls, point size, grid/axes, slice planes visualization.
+ *
+ * Coordinate system: Z-UP (standard for point clouds / LiDAR / surveying)
+ *   X → East / right
+ *   Y → North / forward
+ *   Z → Up (height)
+ *
+ * Three.js is Y-up by default, so we set camera.up = (0,0,1) and
+ * use a scene rotation to keep Z pointing up visually.
  */
 
 import { useEffect, useRef, useCallback } from 'react';
@@ -14,16 +21,23 @@ interface RendererOptions {
   backgroundColor?: number;
 }
 
+/**
+ * Spherical → Cartesian with Z-up convention.
+ *   theta: azimuth around Z axis
+ *   phi:   elevation above XY plane  (0 = horizontal, π/2 = straight up)
+ */
 function updateCameraFromSpherical(
   camera: THREE.PerspectiveCamera,
   spherical: { theta: number; phi: number; radius: number },
   target: THREE.Vector3
 ) {
   const { theta, phi, radius } = spherical;
-  const x = radius * Math.sin(phi) * Math.sin(theta);
-  const y = radius * Math.cos(phi);
-  const z = radius * Math.sin(phi) * Math.cos(theta);
+  // Z-up: x = r·cos(phi)·cos(theta), y = r·cos(phi)·sin(theta), z = r·sin(phi)
+  const x = radius * Math.cos(phi) * Math.cos(theta);
+  const y = radius * Math.cos(phi) * Math.sin(theta);
+  const z = radius * Math.sin(phi);
   camera.position.set(target.x + x, target.y + y, target.z + z);
+  camera.up.set(0, 0, 1);
   camera.lookAt(target);
   camera.updateProjectionMatrix();
 }
@@ -45,7 +59,8 @@ export function usePointCloudRenderer(
   const mouseButtonRef = useRef(0);
   const lastMouseRef = useRef({ x: 0, y: 0 });
   const cameraLockedRef = useRef(false);
-  const sphericalRef = useRef({ theta: Math.PI / 4, phi: Math.PI / 3, radius: 5 });
+  // phi: elevation angle (0 = horizontal, π/2 = top-down)
+  const sphericalRef = useRef({ theta: Math.PI / 4, phi: Math.PI / 6, radius: 5 });
   const targetRef = useRef(new THREE.Vector3(0, 0, 0));
 
   const { pointSize = 2, backgroundColor = 0x080c14 } = options;
@@ -64,7 +79,6 @@ export function usePointCloudRenderer(
     const scene = new THREE.Scene();
     sceneRef.current = scene;
 
-    // Groups for organized scene management
     const pointsGroup = new THREE.Group();
     scene.add(pointsGroup);
     pointsGroupRef.current = pointsGroup;
@@ -77,32 +91,33 @@ export function usePointCloudRenderer(
     scene.add(slicePlanesGroup);
     slicePlanesGroupRef.current = slicePlanesGroup;
 
-    // Add subtle grid
+    // Z-up grid: GridHelper lies in XY plane by default (horizontal in Y-up).
+    // Rotate it so it lies in the XY plane of our Z-up world.
     const grid = new THREE.GridHelper(10, 20, 0x1a2744, 0x0f1a30);
+    grid.rotation.x = Math.PI / 2; // rotate to XY plane (Z-up)
     helperGroup.add(grid);
 
-    // Add axes helper
+    // Axes: X=red, Y=green, Z=blue (Z is up)
     const axes = new THREE.AxesHelper(1);
     helperGroup.add(axes);
 
-    // Camera
+    // Camera with Z-up
     const camera = new THREE.PerspectiveCamera(
       60,
       (canvas.clientWidth || 800) / (canvas.clientHeight || 600),
       0.001,
       100000
     );
+    camera.up.set(0, 0, 1);
     updateCameraFromSpherical(camera, sphericalRef.current, targetRef.current);
     cameraRef.current = camera;
 
-    // Animation loop
     const animate = () => {
       frameRef.current = requestAnimationFrame(animate);
       renderer.render(scene, camera);
     };
     animate();
 
-    // Resize observer
     const resizeObserver = new ResizeObserver(() => {
       if (!canvas) return;
       const w = canvas.clientWidth;
@@ -121,7 +136,7 @@ export function usePointCloudRenderer(
     };
   }, [canvasRef, backgroundColor]);
 
-  // Mouse/touch controls
+  // Mouse/touch controls (Z-up orbit)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -140,19 +155,22 @@ export function usePointCloudRenderer(
       lastMouseRef.current = { x: e.clientX, y: e.clientY };
 
       if (mouseButtonRef.current === 0) {
-        // Left drag: rotate
+        // Left drag: orbit (azimuth + elevation)
         sphericalRef.current.theta -= dx * 0.005;
-        sphericalRef.current.phi -= dy * 0.005;
-        sphericalRef.current.phi = Math.max(0.02, Math.min(Math.PI - 0.02, sphericalRef.current.phi));
+        sphericalRef.current.phi += dy * 0.005;
+        // Clamp elevation: just above horizontal (0.01) to nearly top-down (π/2 - 0.01)
+        sphericalRef.current.phi = Math.max(-Math.PI / 2 + 0.02, Math.min(Math.PI / 2 - 0.02, sphericalRef.current.phi));
       } else if (mouseButtonRef.current === 2) {
-        // Right drag: pan
+        // Right drag: pan in XY plane (Z-up)
         const camera = cameraRef.current;
         if (!camera) return;
         const panSpeed = sphericalRef.current.radius * 0.0008;
-        const right = new THREE.Vector3();
-        camera.getWorldDirection(right);
-        right.cross(camera.up).normalize();
-        const up = camera.up.clone();
+        // Right vector: perpendicular to camera direction in XY plane
+        const camDir = new THREE.Vector3();
+        camera.getWorldDirection(camDir);
+        const right = new THREE.Vector3(-camDir.y, camDir.x, 0).normalize();
+        // Up vector in screen space (projected onto XY plane + Z)
+        const up = new THREE.Vector3(0, 0, 1);
         targetRef.current.addScaledVector(right, -dx * panSpeed);
         targetRef.current.addScaledVector(up, dy * panSpeed);
       }
@@ -162,9 +180,7 @@ export function usePointCloudRenderer(
       }
     };
 
-    const onMouseUp = () => {
-      isMouseDownRef.current = false;
-    };
+    const onMouseUp = () => { isMouseDownRef.current = false; };
 
     const onWheel = (e: WheelEvent) => {
       if (cameraLockedRef.current) return;
@@ -230,7 +246,7 @@ export function usePointCloudRenderer(
     if (clouds.length > 0 && clouds[0].count > 0) {
       const b = clouds[0].bounds;
       const maxSize = Math.max(b.size.x, b.size.y, b.size.z, 0.001);
-      sphericalRef.current.radius = maxSize * 2.0;
+      sphericalRef.current.radius = maxSize * 2.2;
       targetRef.current.set(b.center.x, b.center.y, b.center.z);
 
       // Update helpers
@@ -240,11 +256,14 @@ export function usePointCloudRenderer(
           helperGroup.remove(helperGroup.children[0]);
         }
 
+        // Grid in XY plane (Z-up): place at min Z
         const gridSize = maxSize * 2.5;
         const newGrid = new THREE.GridHelper(gridSize, 20, 0x1a2744, 0x0f1a30);
-        newGrid.position.set(b.center.x, b.min.y - maxSize * 0.02, b.center.z);
+        newGrid.rotation.x = Math.PI / 2; // lie in XY plane
+        newGrid.position.set(b.center.x, b.center.y, b.min.z - maxSize * 0.02);
         helperGroup.add(newGrid);
 
+        // Axes at min corner
         const axes = new THREE.AxesHelper(maxSize * 0.2);
         axes.position.set(b.min.x, b.min.y, b.min.z);
         helperGroup.add(axes);
@@ -256,7 +275,7 @@ export function usePointCloudRenderer(
     }
   }, [pointSize]);
 
-  // Show slice planes
+  // Show slice planes (Z-up aware)
   const showSlicePlanes = useCallback((
     axis: 'x' | 'y' | 'z',
     n: number,
@@ -272,54 +291,52 @@ export function usePointCloudRenderer(
       (child.material as THREE.Material)?.dispose();
     }
 
-    const axisIdx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
     const minVal = bounds.min[axis];
     const maxVal = bounds.max[axis];
     const step = (maxVal - minVal) / n;
     const maxSize = Math.max(bounds.size.x, bounds.size.y, bounds.size.z);
 
+    const planeMat = new THREE.MeshBasicMaterial({
+      color: 0x4f8ef7,
+      transparent: true,
+      opacity: 0.07,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+
+    const lineMat = new THREE.LineBasicMaterial({
+      color: 0x4f8ef7,
+      transparent: true,
+      opacity: 0.45,
+    });
+
     for (let i = 1; i < n; i++) {
       const pos = minVal + i * step;
-      let geometry: THREE.PlaneGeometry;
-      let mesh: THREE.Mesh;
-
-      const planeMat = new THREE.MeshBasicMaterial({
-        color: 0x4f8ef7,
-        transparent: true,
-        opacity: 0.08,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      });
-
-      const lineMat = new THREE.LineBasicMaterial({
-        color: 0x4f8ef7,
-        transparent: true,
-        opacity: 0.4,
-      });
+      const geo = new THREE.PlaneGeometry(maxSize * 1.3, maxSize * 1.3);
+      const mesh = new THREE.Mesh(geo, planeMat.clone());
 
       if (axis === 'z') {
-        geometry = new THREE.PlaneGeometry(maxSize * 1.2, maxSize * 1.2);
-        mesh = new THREE.Mesh(geometry, planeMat);
+        // Horizontal plane (XY plane at height z=pos)
+        mesh.rotation.x = Math.PI / 2; // make it horizontal in Z-up
         mesh.position.set(bounds.center.x, bounds.center.y, pos);
 
-        // Line
-        const lineGeo = new THREE.BufferGeometry().setFromPoints([
+        // Outline
+        const pts = [
           new THREE.Vector3(bounds.min.x - maxSize * 0.1, bounds.min.y - maxSize * 0.1, pos),
           new THREE.Vector3(bounds.max.x + maxSize * 0.1, bounds.min.y - maxSize * 0.1, pos),
           new THREE.Vector3(bounds.max.x + maxSize * 0.1, bounds.max.y + maxSize * 0.1, pos),
           new THREE.Vector3(bounds.min.x - maxSize * 0.1, bounds.max.y + maxSize * 0.1, pos),
           new THREE.Vector3(bounds.min.x - maxSize * 0.1, bounds.min.y - maxSize * 0.1, pos),
-        ]);
-        const line = new THREE.Line(lineGeo, lineMat);
-        group.add(line);
+        ];
+        const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
+        group.add(new THREE.Line(lineGeo, lineMat.clone()));
       } else if (axis === 'y') {
-        geometry = new THREE.PlaneGeometry(maxSize * 1.2, maxSize * 1.2);
-        mesh = new THREE.Mesh(geometry, planeMat);
-        mesh.rotation.x = Math.PI / 2;
+        // XZ plane (vertical, perpendicular to Y)
+        mesh.rotation.y = Math.PI / 2;
+        mesh.rotation.z = Math.PI / 2;
         mesh.position.set(bounds.center.x, pos, bounds.center.z);
       } else {
-        geometry = new THREE.PlaneGeometry(maxSize * 1.2, maxSize * 1.2);
-        mesh = new THREE.Mesh(geometry, planeMat);
+        // YZ plane (vertical, perpendicular to X)
         mesh.rotation.y = Math.PI / 2;
         mesh.position.set(pos, bounds.center.y, bounds.center.z);
       }
@@ -339,7 +356,6 @@ export function usePointCloudRenderer(
     }
   }, []);
 
-  // Update point size
   const setPointSize = useCallback((size: number) => {
     const group = pointsGroupRef.current;
     if (!group) return;
@@ -350,38 +366,39 @@ export function usePointCloudRenderer(
     });
   }, []);
 
-  // Lock/unlock camera
   const setCameraLocked = useCallback((locked: boolean) => {
     cameraLockedRef.current = locked;
   }, []);
 
-  // Reset camera view
   const resetCamera = useCallback(() => {
     sphericalRef.current.theta = Math.PI / 4;
-    sphericalRef.current.phi = Math.PI / 3;
+    sphericalRef.current.phi = Math.PI / 6;
     if (cameraRef.current) {
       updateCameraFromSpherical(cameraRef.current, sphericalRef.current, targetRef.current);
     }
   }, []);
 
-  // Set view direction
+  // Set view direction (Z-up)
   const setView = useCallback((view: 'front' | 'top' | 'side' | 'iso') => {
     switch (view) {
       case 'front':
-        sphericalRef.current.theta = 0;
-        sphericalRef.current.phi = Math.PI / 2;
+        // Looking from +Y toward -Y, Z is up
+        sphericalRef.current.theta = -Math.PI / 2;
+        sphericalRef.current.phi = 0;
         break;
       case 'top':
+        // Looking straight down from +Z
         sphericalRef.current.theta = 0;
-        sphericalRef.current.phi = 0.02;
+        sphericalRef.current.phi = Math.PI / 2 - 0.02;
         break;
       case 'side':
-        sphericalRef.current.theta = Math.PI / 2;
-        sphericalRef.current.phi = Math.PI / 2;
+        // Looking from +X toward -X
+        sphericalRef.current.theta = 0;
+        sphericalRef.current.phi = 0;
         break;
       case 'iso':
         sphericalRef.current.theta = Math.PI / 4;
-        sphericalRef.current.phi = Math.PI / 3;
+        sphericalRef.current.phi = Math.PI / 6;
         break;
     }
     if (cameraRef.current) {
@@ -389,7 +406,6 @@ export function usePointCloudRenderer(
     }
   }, []);
 
-  // Toggle helpers visibility
   const setHelpersVisible = useCallback((grid: boolean, axes: boolean) => {
     const helperGroup = helperGroupRef.current;
     if (!helperGroup) return;

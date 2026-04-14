@@ -91,11 +91,21 @@ export default function PointCloudViewer({ className = '' }: PointCloudViewerPro
   }
 
   return (
-    <div className={`relative w-full h-full ${className}`} style={{ background: '#080c14' }}>
+    <div
+      className={`relative ${className}`}
+      style={{ background: '#080c14', width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}
+    >
       <canvas
         ref={canvasRef}
-        className="w-full h-full block"
-        style={{ touchAction: 'none', cursor: cameraLocked ? 'not-allowed' : 'grab' }}
+        style={{
+          display: 'block',
+          width: '100%',
+          height: '100%',
+          flex: 1,
+          minHeight: 0,
+          touchAction: 'none',
+          cursor: cameraLocked ? 'not-allowed' : 'grab',
+        }}
       />
 
       {/* Overlay: no cloud loaded */}

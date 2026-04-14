@@ -1,11 +1,13 @@
 /**
  * PointCloudContext
- * Global state for point cloud data, slices, and view settings.
+ * Global state for point cloud data, slices, view settings, and density histograms.
  */
 
 import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import type { PointCloud, PointCloudSlice } from '@/lib/pointCloudParser';
 import { splitPointCloud, projectPointCloud } from '@/lib/pointCloudParser';
+import type { DensityHistogram, HistogramAxis } from '@/lib/densityHistogram';
+import { computeDensityHistogram, estimateMedianNN } from '@/lib/densityHistogram';
 
 export type SplitAxis = 'x' | 'y' | 'z';
 export type ProjectionPlane = 'xy' | 'xz' | 'yz';
@@ -18,17 +20,24 @@ export interface ProjectionView {
   cloud: PointCloud;
 }
 
+export interface HistogramView {
+  id: string;
+  sliceIndex: number | 'all';
+  projAxis: HistogramAxis;
+  multiplier: number;
+  histogram: DensityHistogram;
+  label: string;
+}
+
 interface PointCloudState {
-  // Raw data
   originalCloud: PointCloud | null;
   fileName: string;
+  medianNN: number | null;
 
-  // Split settings
   splitAxis: SplitAxis;
   splitCount: number;
   slices: PointCloudSlice[];
 
-  // View settings
   viewMode: ViewMode;
   activeSliceIndex: number;
   cameraLocked: boolean;
@@ -36,10 +45,9 @@ interface PointCloudState {
   showGrid: boolean;
   showAxes: boolean;
 
-  // Projection views
   projectionViews: ProjectionView[];
+  histogramViews: HistogramView[];
 
-  // Actions
   loadCloud: (cloud: PointCloud, name: string) => void;
   setSplitAxis: (axis: SplitAxis) => void;
   setSplitCount: (n: number) => void;
@@ -52,6 +60,9 @@ interface PointCloudState {
   setShowAxes: (show: boolean) => void;
   addProjectionView: (sliceIndex: number | 'all', plane: ProjectionPlane) => void;
   removeProjectionView: (id: string) => void;
+  addHistogramView: (sliceIndex: number | 'all', projAxis: HistogramAxis, multiplier: number) => void;
+  removeHistogramView: (id: string) => void;
+  recomputeHistogram: (id: string, multiplier: number) => void;
   clearAll: () => void;
 }
 
@@ -60,6 +71,7 @@ const PointCloudContext = createContext<PointCloudState | null>(null);
 export function PointCloudProvider({ children }: { children: React.ReactNode }) {
   const [originalCloud, setOriginalCloud] = useState<PointCloud | null>(null);
   const [fileName, setFileName] = useState('');
+  const [medianNN, setMedianNN] = useState<number | null>(null);
   const [splitAxis, setSplitAxisState] = useState<SplitAxis>('z');
   const [splitCount, setSplitCountState] = useState(4);
   const [slices, setSlices] = useState<PointCloudSlice[]>([]);
@@ -70,8 +82,10 @@ export function PointCloudProvider({ children }: { children: React.ReactNode }) 
   const [showGrid, setShowGridState] = useState(true);
   const [showAxes, setShowAxesState] = useState(true);
   const [projectionViews, setProjectionViews] = useState<ProjectionView[]>([]);
+  const [histogramViews, setHistogramViews] = useState<HistogramView[]>([]);
 
-  const projIdCounter = useRef(0);
+  const idCounter = useRef(0);
+  const nextId = () => `view-${++idCounter.current}`;
 
   const loadCloud = useCallback((cloud: PointCloud, name: string) => {
     setOriginalCloud(cloud);
@@ -80,15 +94,16 @@ export function PointCloudProvider({ children }: { children: React.ReactNode }) 
     setViewModeState('all');
     setActiveSliceIndexState(0);
     setProjectionViews([]);
+    setHistogramViews([]);
+    // Compute median NN asynchronously
+    setTimeout(() => {
+      const nn = estimateMedianNN(cloud.points, cloud.count);
+      setMedianNN(nn);
+    }, 0);
   }, []);
 
-  const setSplitAxis = useCallback((axis: SplitAxis) => {
-    setSplitAxisState(axis);
-  }, []);
-
-  const setSplitCount = useCallback((n: number) => {
-    setSplitCountState(Math.max(1, Math.min(50, n)));
-  }, []);
+  const setSplitAxis = useCallback((axis: SplitAxis) => setSplitAxisState(axis), []);
+  const setSplitCount = useCallback((n: number) => setSplitCountState(Math.max(1, Math.min(50, n))), []);
 
   const applySplit = useCallback(() => {
     if (!originalCloud) return;
@@ -98,29 +113,12 @@ export function PointCloudProvider({ children }: { children: React.ReactNode }) 
     setActiveSliceIndexState(0);
   }, [originalCloud, splitAxis, splitCount]);
 
-  const setViewMode = useCallback((mode: ViewMode) => {
-    setViewModeState(mode);
-  }, []);
-
-  const setActiveSliceIndex = useCallback((idx: number) => {
-    setActiveSliceIndexState(idx);
-  }, []);
-
-  const setCameraLocked = useCallback((locked: boolean) => {
-    setCameraLockedState(locked);
-  }, []);
-
-  const setPointSize = useCallback((size: number) => {
-    setPointSizeState(size);
-  }, []);
-
-  const setShowGrid = useCallback((show: boolean) => {
-    setShowGridState(show);
-  }, []);
-
-  const setShowAxes = useCallback((show: boolean) => {
-    setShowAxesState(show);
-  }, []);
+  const setViewMode = useCallback((mode: ViewMode) => setViewModeState(mode), []);
+  const setActiveSliceIndex = useCallback((idx: number) => setActiveSliceIndexState(idx), []);
+  const setCameraLocked = useCallback((locked: boolean) => setCameraLockedState(locked), []);
+  const setPointSize = useCallback((size: number) => setPointSizeState(size), []);
+  const setShowGrid = useCallback((show: boolean) => setShowGridState(show), []);
+  const setShowAxes = useCallback((show: boolean) => setShowAxesState(show), []);
 
   const addProjectionView = useCallback((sliceIndex: number | 'all', plane: ProjectionPlane) => {
     if (!originalCloud) return;
@@ -132,48 +130,74 @@ export function PointCloudProvider({ children }: { children: React.ReactNode }) 
       sourceCloud = slices[sliceIndex] || slices[0];
     }
     const projected = projectPointCloud(sourceCloud, plane);
-    const id = `proj-${++projIdCounter.current}`;
-    setProjectionViews(prev => [...prev, { id, sliceIndex, plane, cloud: projected }]);
+    setProjectionViews(prev => [...prev, { id: nextId(), sliceIndex, plane, cloud: projected }]);
   }, [originalCloud, slices]);
 
   const removeProjectionView = useCallback((id: string) => {
     setProjectionViews(prev => prev.filter(v => v.id !== id));
   }, []);
 
+  const addHistogramView = useCallback((
+    sliceIndex: number | 'all',
+    projAxis: HistogramAxis,
+    multiplier: number
+  ) => {
+    if (!originalCloud) return;
+    let sourceCloud: PointCloud | PointCloudSlice;
+    if (sliceIndex === 'all') {
+      sourceCloud = originalCloud;
+    } else {
+      if (slices.length === 0) return;
+      sourceCloud = slices[sliceIndex as number] || slices[0];
+    }
+    const nn = medianNN ?? estimateMedianNN(sourceCloud.points, sourceCloud.count);
+    const histogram = computeDensityHistogram(sourceCloud, projAxis, multiplier, nn);
+    const label = sliceIndex === 'all' ? '整体点云' : `切片 ${(sliceIndex as number) + 1}`;
+    setHistogramViews(prev => [...prev, { id: nextId(), sliceIndex, projAxis, multiplier, histogram, label }]);
+  }, [originalCloud, slices, medianNN]);
+
+  const removeHistogramView = useCallback((id: string) => {
+    setHistogramViews(prev => prev.filter(v => v.id !== id));
+  }, []);
+
+  const recomputeHistogram = useCallback((id: string, multiplier: number) => {
+    if (!originalCloud) return;
+    setHistogramViews(prev => prev.map(v => {
+      if (v.id !== id) return v;
+      let sourceCloud: PointCloud | PointCloudSlice;
+      if (v.sliceIndex === 'all') {
+        sourceCloud = originalCloud;
+      } else {
+        if (slices.length === 0) return v;
+        sourceCloud = slices[v.sliceIndex as number] || slices[0];
+      }
+      const nn = medianNN ?? estimateMedianNN(sourceCloud.points, sourceCloud.count);
+      const histogram = computeDensityHistogram(sourceCloud, v.projAxis, multiplier, nn);
+      return { ...v, multiplier, histogram };
+    }));
+  }, [originalCloud, slices, medianNN]);
+
   const clearAll = useCallback(() => {
     setOriginalCloud(null);
     setFileName('');
+    setMedianNN(null);
     setSlices([]);
     setProjectionViews([]);
+    setHistogramViews([]);
     setViewModeState('all');
   }, []);
 
   return (
     <PointCloudContext.Provider value={{
-      originalCloud,
-      fileName,
-      splitAxis,
-      splitCount,
-      slices,
-      viewMode,
-      activeSliceIndex,
-      cameraLocked,
-      pointSize,
-      showGrid,
-      showAxes,
-      projectionViews,
-      loadCloud,
-      setSplitAxis,
-      setSplitCount,
-      applySplit,
-      setViewMode,
-      setActiveSliceIndex,
-      setCameraLocked,
-      setPointSize,
-      setShowGrid,
-      setShowAxes,
-      addProjectionView,
-      removeProjectionView,
+      originalCloud, fileName, medianNN,
+      splitAxis, splitCount, slices,
+      viewMode, activeSliceIndex, cameraLocked, pointSize, showGrid, showAxes,
+      projectionViews, histogramViews,
+      loadCloud, setSplitAxis, setSplitCount, applySplit,
+      setViewMode, setActiveSliceIndex, setCameraLocked, setPointSize,
+      setShowGrid, setShowAxes,
+      addProjectionView, removeProjectionView,
+      addHistogramView, removeHistogramView, recomputeHistogram,
       clearAll,
     }}>
       {children}
