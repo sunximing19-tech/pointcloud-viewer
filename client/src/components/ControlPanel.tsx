@@ -7,13 +7,14 @@
 
 import { useRef, useState, useCallback } from 'react';
 import { usePointCloud } from '@/contexts/PointCloudContext';
-import { parsePointCloud } from '@/lib/pointCloudParser';
+import { useProject } from '@/contexts/ProjectContext';
+import { parsePointCloudAsync } from '@/lib/pointCloudParser';
 import type { SplitAxis, ProjectionPlane } from '@/contexts/PointCloudContext';
 import type { HistogramAxis } from '@/lib/densityHistogram';
 import { toast } from 'sonner';
 import {
   Upload, Scissors, Eye, Lock, Unlock, Grid3X3, Layers,
-  RotateCcw, Maximize2, FileText, Sliders, Box, Plus, BarChart2,
+  Maximize2, FileText, Sliders, Box, Plus, BarChart2,
 } from 'lucide-react';
 import SampleDataLoader from './SampleDataLoader';
 
@@ -42,8 +43,11 @@ export default function ControlPanel() {
     loadCloud,
   } = usePointCloud();
 
+  const { activeProjectId, updateProjectCloud } = useProject();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0);
+  const [loadStage, setLoadStage] = useState('');
 
   // Projection state
   const [projPlane, setProjPlane] = useState<ProjectionPlane>('xy');
@@ -58,18 +62,24 @@ export default function ControlPanel() {
     const file = e.target.files?.[0];
     if (!file) return;
     setIsLoading(true);
+    setLoadProgress(0);
+    setLoadStage('准备中...');
     try {
-      const text = await file.text();
-      const cloud = parsePointCloud(text);
+      const cloud = await parsePointCloudAsync(file, (progress, stage) => {
+        setLoadProgress(Math.round(progress * 100));
+        setLoadStage(stage);
+      });
       loadCloud(cloud, file.name);
+      updateProjectCloud(activeProjectId, cloud, file.name);
       toast.success(`已导入 ${cloud.count.toLocaleString()} 个点`, { description: file.name });
     } catch (err) {
       toast.error('解析失败', { description: String(err) });
     } finally {
       setIsLoading(false);
+      setLoadProgress(0);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
-  }, [loadCloud]);
+  }, [loadCloud, activeProjectId, updateProjectCloud]);
 
   const handleAddProjection = useCallback(() => {
     if (!originalCloud) { toast.error('请先导入点云'); return; }
@@ -175,8 +185,26 @@ export default function ControlPanel() {
           }}
         >
           <Upload size={14} />
-          {isLoading ? '解析中...' : '导入点云 (.txt)'}
+          {isLoading ? `${loadStage} ${loadProgress}%` : '导入点云 (.txt)'}
         </button>
+        {isLoading && (
+          <div className="mt-2">
+            <div className="flex justify-between text-[10px] font-mono text-slate-600 mb-1">
+              <span>{loadStage}</span>
+              <span>{loadProgress}%</span>
+            </div>
+            <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.06)' }}>
+              <div
+                className="h-full rounded-full transition-all duration-300"
+                style={{
+                  width: `${loadProgress}%`,
+                  background: 'linear-gradient(to right, #3b82f6, #60a5fa)',
+                  boxShadow: '0 0 6px rgba(96,165,250,0.5)',
+                }}
+              />
+            </div>
+          </div>
+        )}
         <SampleDataLoader />
         {fileName && (
           <div className="mt-2 flex items-center gap-2 px-2.5 py-2 rounded-lg" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
