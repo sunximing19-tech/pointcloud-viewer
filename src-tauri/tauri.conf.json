@@ -28,6 +28,13 @@
   "bundle": {
     "active": true,
     "targets": ["msi", "dmg"],
+    "macOS": {
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null
+    },
     "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"],
     "category": "Utility",
     "shortDescription": "离线点云展示、切分、投影与密度分析工具",
