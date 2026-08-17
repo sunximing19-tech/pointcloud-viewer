@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PointCloud Viewer",
+  "version": "1.0.0",
+  "identifier": "com.pointcloudviewer.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev --host 127.0.0.1",
+    "devUrl": "http://127.0.0.1:3000",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist/public"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PointCloud Viewer",
+        "width": 1440,
+        "height": 960,
+        "minWidth": 1024,
+        "minHeight": 720,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "dmg"],
+    "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"],
+    "category": "Utility",
+    "shortDescription": "离线点云展示、切分、投影与密度分析工具",
+    "longDescription": "PointCloud Viewer 是一个无需网络和 Node.js 运行时即可使用的桌面点云分析工具。",
+    "copyright": "Copyright © 2026 PointCloud Viewer"
+  }
+}

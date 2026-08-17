@@ -1,0 +1,61 @@
+name: Build and Release Desktop Apps
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Build ${{ matrix.platform }} desktop installer
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            os: windows-latest
+            bundles: msi,nsis
+          - platform: macOS
+            os: macos-latest
+            bundles: dmg
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+
+      - name: Setup Node.js for build only
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and publish Tauri installer
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: PointCloud Viewer ${{ github.ref_name }}
+          releaseBody: |
+            PointCloud Viewer ${{ github.ref_name }} desktop release.
+
+            This desktop package runs the point cloud viewer locally and does not require Node.js or a network connection at runtime.
+          releaseDraft: false
+          prerelease: false
+          args: --bundles ${{ matrix.bundles }}

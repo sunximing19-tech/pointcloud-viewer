@@ -5,6 +5,7 @@
 # Build outputs
 dist/
 build/
+src-tauri/target/
 *.dist
 
 # Environment variables
