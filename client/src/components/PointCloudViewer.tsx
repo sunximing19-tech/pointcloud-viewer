@@ -7,6 +7,7 @@
 import { useRef, useEffect } from 'react';
 import { usePointCloudRenderer } from '@/hooks/usePointCloudRenderer';
 import { usePointCloud } from '@/contexts/PointCloudContext';
+import { useProject } from '@/contexts/ProjectContext';
 import type { PointCloud } from '@/lib/pointCloudParser';
 
 interface PointCloudViewerProps {
@@ -15,6 +16,7 @@ interface PointCloudViewerProps {
 
 export default function PointCloudViewer({ className = '' }: PointCloudViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const { activeProject } = useProject();
   const {
     originalCloud,
     slices,
@@ -37,6 +39,7 @@ export default function PointCloudViewer({ className = '' }: PointCloudViewerPro
     setHelpersVisible,
     showSlicePlanes,
     clearSlicePlanes,
+    setSemanticBoxes,
   } = usePointCloudRenderer(canvasRef, { pointSize });
 
   // Sync camera lock
@@ -79,6 +82,11 @@ export default function PointCloudViewer({ className = '' }: PointCloudViewerPro
 
     loadPointCloud(cloudsToRender, true);
   }, [originalCloud, slices, viewMode, activeSliceIndex, loadPointCloud, showSlicePlanes, clearSlicePlanes, splitAxis, splitCount]);
+
+  // Keep semantic boxes tied to the active project. The renderer uses the same Z-up world as the point cloud.
+  useEffect(() => {
+    setSemanticBoxes(activeProject?.semanticResult?.boxes ?? []);
+  }, [activeProject?.semanticResult, setSemanticBoxes]);
 
   // Compute current point count
   let currentPointCount = 0;
@@ -182,6 +190,13 @@ export default function PointCloudViewer({ className = '' }: PointCloudViewerPro
         <div className="absolute top-4 right-4 px-2.5 py-1.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-mono backdrop-blur-sm flex items-center gap-1.5">
           <span>🔒</span>
           <span>视角已锁定</span>
+        </div>
+      )}
+
+      {/* Semantic result indicator */}
+      {activeProject?.semanticResult && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-violet-500/15 border border-violet-400/35 text-violet-200 text-xs font-mono backdrop-blur-sm">
+          SpatialLM · {activeProject.semanticResult.boxes.length} 个语义框
         </div>
       )}
 

@@ -9,12 +9,13 @@ import { useRef, useState, useCallback } from 'react';
 import { usePointCloud } from '@/contexts/PointCloudContext';
 import { useProject } from '@/contexts/ProjectContext';
 import { parsePointCloudAsync } from '@/lib/pointCloudParser';
+import { runSpatialLMInference } from '@/lib/spatiallmClient';
 import type { SplitAxis, ProjectionPlane } from '@/contexts/PointCloudContext';
 import type { HistogramAxis } from '@/lib/densityHistogram';
 import { toast } from 'sonner';
 import {
   Upload, Scissors, Eye, Lock, Unlock, Grid3X3, Layers,
-  Maximize2, FileText, Sliders, Box, Plus, BarChart2,
+  Maximize2, FileText, Sliders, Box, Plus, BarChart2, BrainCircuit,
 } from 'lucide-react';
 import SampleDataLoader from './SampleDataLoader';
 
@@ -43,7 +44,13 @@ export default function ControlPanel() {
     loadCloud,
   } = usePointCloud();
 
-  const { activeProjectId, updateProjectCloud } = useProject();
+  const {
+    activeProjectId,
+    activeProject,
+    updateProjectCloud,
+    setSemanticStatus,
+    setSemanticResult,
+  } = useProject();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
@@ -58,6 +65,12 @@ export default function ControlPanel() {
   const [histSource, setHistSource] = useState<'all' | number>('all');
   const [histMultiplier, setHistMultiplier] = useState(1.0);
 
+  // SpatialLM semantic analysis
+  const [semanticType, setSemanticType] = useState<'all' | 'arch' | 'object'>('object');
+  const [semanticCategories, setSemanticCategories] = useState('bed, sofa, chair');
+  const [semanticEndpoint, setSemanticEndpoint] = useState('http://localhost:8000/api/predict-spatiallm');
+  const [semanticLoading, setSemanticLoading] = useState(false);
+
   const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -70,7 +83,7 @@ export default function ControlPanel() {
         setLoadStage(stage);
       });
       loadCloud(cloud, file.name);
-      updateProjectCloud(activeProjectId, cloud, file.name);
+      updateProjectCloud(activeProjectId, cloud, file.name, file);
       toast.success(`已导入 ${cloud.count.toLocaleString()} 个点`, { description: file.name });
     } catch (err) {
       toast.error('解析失败', { description: String(err) });
@@ -94,6 +107,41 @@ export default function ControlPanel() {
     addHistogramView(histSource, histAxis, histMultiplier);
     toast.success('已添加密度直方图');
   }, [originalCloud, histSource, histAxis, histMultiplier, slices, addHistogramView]);
+
+  const handleSemanticAnalysis = useCallback(async () => {
+    if (!activeProject?.cloud) {
+      toast.error('请先导入点云');
+      return;
+    }
+    if (!activeProject.sourceFile) {
+      toast.error('当前项目没有可供 SpatialLM 使用的原始文件');
+      return;
+    }
+
+    setSemanticLoading(true);
+    setSemanticStatus(activeProjectId, 'running');
+    try {
+      const categories = semanticCategories
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+      const result = await runSpatialLMInference(
+        activeProject.sourceFile,
+        activeProject.fileName,
+        semanticType,
+        categories,
+        semanticEndpoint.trim(),
+      );
+      setSemanticResult(activeProjectId, result);
+      toast.success(`SpatialLM 已返回 ${result.boxes.length} 个语义框`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSemanticStatus(activeProjectId, 'error', message);
+      toast.error('SpatialLM 分析失败', { description: message });
+    } finally {
+      setSemanticLoading(false);
+    }
+  }, [activeProject, activeProjectId, semanticCategories, semanticEndpoint, semanticType, setSemanticResult, setSemanticStatus]);
 
   const axisBtn = (label: string, val: SplitAxis) => (
     <button
@@ -224,6 +272,87 @@ export default function ControlPanel() {
             </div>
           </div>
         )}
+
+        {/* SpatialLM semantic analysis */}
+        <div className="mt-3 rounded-lg p-2.5" style={{ background: 'linear-gradient(135deg, rgba(124,58,237,0.10), rgba(37,99,235,0.07))', border: '1px solid rgba(139,92,246,0.24)' }}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <BrainCircuit size={12} className="text-violet-300" />
+              <span className="text-[10px] font-mono text-violet-200 uppercase tracking-widest">AI 语义分析</span>
+            </div>
+            {activeProject?.semanticStatus === 'success' && (
+              <span className="text-[9px] font-mono text-emerald-400">{activeProject.semanticResult?.boxes.length ?? 0} 个语义框</span>
+            )}
+          </div>
+
+          <div className="text-[9px] font-mono text-slate-500 leading-relaxed mb-2">
+            SpatialLM 需要独立的 Python + CUDA 推理服务，返回结果后将在 3D 视图叠加 Z-up 边界框。
+          </div>
+
+          <div className="flex gap-1 mb-2">
+            {([
+              ['object', '物体'],
+              ['arch', '建筑'],
+              ['all', '全部'],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setSemanticType(value)}
+                className="flex-1 py-1 rounded text-[10px] font-mono transition-colors"
+                style={{
+                  background: semanticType === value ? 'rgba(139,92,246,0.28)' : 'rgba(255,255,255,0.04)',
+                  border: semanticType === value ? '1px solid rgba(167,139,250,0.55)' : '1px solid rgba(255,255,255,0.08)',
+                  color: semanticType === value ? '#ddd6fe' : '#64748b',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {semanticType !== 'arch' && (
+            <input
+              value={semanticCategories}
+              onChange={e => setSemanticCategories(e.target.value)}
+              placeholder="类别：bed, sofa, chair"
+              className="w-full px-2 py-1.5 mb-2 rounded text-[10px] font-mono outline-none"
+              style={{ background: 'rgba(0,0,0,0.22)', border: '1px solid rgba(255,255,255,0.08)', color: '#c4b5fd' }}
+            />
+          )}
+
+          <input
+            value={semanticEndpoint}
+            onChange={e => setSemanticEndpoint(e.target.value)}
+            aria-label="SpatialLM 服务地址"
+            className="w-full px-2 py-1.5 mb-2 rounded text-[9px] font-mono outline-none"
+            style={{ background: 'rgba(0,0,0,0.22)', border: '1px solid rgba(255,255,255,0.08)', color: '#94a3b8' }}
+          />
+
+          <button
+            onClick={handleSemanticAnalysis}
+            disabled={!originalCloud || semanticLoading}
+            className="w-full flex items-center justify-center gap-2 py-2 rounded text-xs font-mono transition-all"
+            style={{
+              background: !originalCloud || semanticLoading ? 'rgba(255,255,255,0.05)' : 'linear-gradient(135deg, rgba(124,58,237,0.75), rgba(37,99,235,0.72))',
+              border: '1px solid rgba(167,139,250,0.35)',
+              color: !originalCloud || semanticLoading ? '#475569' : '#ede9fe',
+            }}
+          >
+            <BrainCircuit size={13} />
+            {semanticLoading ? 'SpatialLM 推理中…' : '运行 AI 语义分析'}
+          </button>
+
+          {activeProject?.semanticStatus === 'error' && (
+            <div className="mt-2 text-[9px] font-mono leading-relaxed" style={{ color: '#fca5a5' }}>
+              {activeProject.semanticError}
+            </div>
+          )}
+          {activeProject?.semanticStatus === 'success' && (
+            <div className="mt-2 text-[9px] font-mono" style={{ color: '#86efac' }}>
+              已显示 {activeProject.semanticResult?.boxes.length ?? 0} 个边界框；切换项目可查看各自结果。
+            </div>
+          )}
+        </div>
 
         <Divider />
 
