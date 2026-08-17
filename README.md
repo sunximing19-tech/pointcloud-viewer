@@ -35,7 +35,6 @@ Point Cloud Viewer 是一个面向三维视觉研究、测绘工程和点云数�
 | **平面投影** | 支持将整体点云或切片投影到 XY、XZ、YZ 平面。 |
 | **点密度直方图** | 支持选择投影方向，网格大小默认基于 3D 点云第一最近邻距离的中位数，并允许调整倍率。 |
 
-<img width="949" height="461" alt="image" src="https://github.com/user-attachments/assets/e0b06a1c-31ff-4766-a642-20a67c385a68" />
 ---
 
 ## 桌面版：Windows 与 macOS
