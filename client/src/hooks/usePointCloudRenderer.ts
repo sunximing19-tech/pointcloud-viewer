@@ -15,7 +15,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import type { PointCloud } from '@/lib/pointCloudParser';
-import type { Bbox3D } from '@/lib/spatiallmClient';
 
 interface RendererOptions {
   pointSize?: number;
@@ -54,7 +53,6 @@ export function usePointCloudRenderer(
   const pointsGroupRef = useRef<THREE.Group | null>(null);
   const helperGroupRef = useRef<THREE.Group | null>(null);
   const slicePlanesGroupRef = useRef<THREE.Group | null>(null);
-  const semanticBoxesGroupRef = useRef<THREE.Group | null>(null);
 
   // Orbit controls state
   const isMouseDownRef = useRef(false);
@@ -92,10 +90,6 @@ export function usePointCloudRenderer(
     const slicePlanesGroup = new THREE.Group();
     scene.add(slicePlanesGroup);
     slicePlanesGroupRef.current = slicePlanesGroup;
-
-    const semanticBoxesGroup = new THREE.Group();
-    scene.add(semanticBoxesGroup);
-    semanticBoxesGroupRef.current = semanticBoxesGroup;
 
     // Z-up grid: GridHelper lies in XY plane by default (horizontal in Y-up).
     // Rotate it so it lies in the XY plane of our Z-up world.
@@ -362,76 +356,6 @@ export function usePointCloudRenderer(
     }
   }, []);
 
-  const setSemanticBoxes = useCallback((boxes: Bbox3D[]) => {
-    const group = semanticBoxesGroupRef.current;
-    if (!group) return;
-
-    while (group.children.length > 0) {
-      const child = group.children[0];
-      group.remove(child);
-      child.traverse(object => {
-        const mesh = object as THREE.Mesh;
-        if (mesh.geometry) mesh.geometry.dispose();
-        const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
-        if (Array.isArray(material)) material.forEach(item => item.dispose());
-        else material?.dispose();
-        const map = !Array.isArray(material) && material && 'map' in material
-          ? (material as THREE.SpriteMaterial).map
-          : undefined;
-        map?.dispose();
-      });
-    }
-
-    boxes.forEach((box, index) => {
-      const [cx, cy, cz] = box.center;
-      const [sx, sy, sz] = box.size.map(value => Math.max(Math.abs(value), 0.001)) as [number, number, number];
-      const color = new THREE.Color().setHSL((index * 0.17 + 0.76) % 1, 0.78, 0.62);
-
-      // Semi-transparent fill makes the predicted volume readable without hiding points.
-      const fillGeometry = new THREE.BoxGeometry(sx, sy, sz);
-      const fill = new THREE.Mesh(
-        fillGeometry,
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.08, depthWrite: false, side: THREE.DoubleSide }),
-      );
-      fill.position.set(cx, cy, cz);
-      fill.rotation.z = box.rotation?.[2] ?? 0;
-      group.add(fill);
-
-      const edgeGeometry = new THREE.EdgesGeometry(fillGeometry);
-      const edges = new THREE.LineSegments(
-        edgeGeometry,
-        new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95 }),
-      );
-      edges.position.copy(fill.position);
-      edges.rotation.copy(fill.rotation);
-      group.add(edges);
-
-      const labelCanvas = document.createElement('canvas');
-      labelCanvas.width = 512;
-      labelCanvas.height = 96;
-      const context = labelCanvas.getContext('2d');
-      if (context) {
-        context.clearRect(0, 0, labelCanvas.width, labelCanvas.height);
-        context.fillStyle = `#${color.getHexString()}`;
-        context.globalAlpha = 0.94;
-        context.fillRect(4, 4, labelCanvas.width - 8, labelCanvas.height - 8);
-        context.globalAlpha = 1;
-        context.fillStyle = '#07101e';
-        context.font = 'bold 34px Space Grotesk, Arial, sans-serif';
-        context.textBaseline = 'middle';
-        const confidence = typeof box.confidence === 'number' ? `  ${(box.confidence * 100).toFixed(0)}%` : '';
-        context.fillText(`${box.label}${confidence}`, 18, labelCanvas.height / 2);
-      }
-      const labelTexture = new THREE.CanvasTexture(labelCanvas);
-      labelTexture.colorSpace = THREE.SRGBColorSpace;
-      const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelTexture, transparent: true, depthTest: false }));
-      const labelScale = Math.max(sx, sy, sz) * 0.55;
-      label.scale.set(labelScale * 2.7, labelScale * 0.5, 1);
-      label.position.set(cx, cy, cz + sz / 2 + Math.max(sz * 0.08, 0.02));
-      group.add(label);
-    });
-  }, []);
-
   const setPointSize = useCallback((size: number) => {
     const group = pointsGroupRef.current;
     if (!group) return;
@@ -500,7 +424,6 @@ export function usePointCloudRenderer(
     setHelpersVisible,
     showSlicePlanes,
     clearSlicePlanes,
-    setSemanticBoxes,
     sceneRef,
     cameraRef,
     rendererRef,

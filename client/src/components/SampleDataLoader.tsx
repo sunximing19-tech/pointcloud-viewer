@@ -65,9 +65,8 @@ export default function SampleDataLoader() {
       try {
         const text = generateSampleCloud();
         const cloud = parsePointCloud(text);
-        const sourceFile = new File([text], 'sample_scene.txt', { type: 'text/plain' });
-        loadCloud(cloud, sourceFile.name);
-        updateProjectCloud(activeProjectId, cloud, sourceFile.name, sourceFile);
+        loadCloud(cloud, 'sample_scene.txt');
+        updateProjectCloud(activeProjectId, cloud, 'sample_scene.txt');
         toast.success(`已加载示例点云 (${cloud.count.toLocaleString()} pts)`, {
           description: '球体 + 地面 + 圆柱 + 斜坡',
         });
